@@ -1,11 +1,12 @@
 package core.beans.factory;
 
+import annotation.aspect.Aspect;
 import annotation.beans.Resource;
 import annotation.beans.WinterConstructor;
+import core.aop.AopProxyManager;
 import core.beans.BeanConstructor;
 import core.beans.BeanDefinition;
 import core.beans.support.RootBeanDefinition;
-
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -34,8 +35,14 @@ public class JamBeanFactory {
     /** 实际上存储单例的地方，用的也是一个ConcurrentHashMap */
     private Map<String,Object> singletons = new ConcurrentHashMap<>(16);
 
+    /** 如果对象需要代理的话，那么将代理对象存入二级缓存之中 **/
+    private Map<String,Object> singletons2 = new ConcurrentHashMap<>(16);
+
     /** 记录正在创建的bean */
     private final Set singletonsCurrentlyInCreation = Collections.synchronizedSet(new HashSet());
+
+    /**Aop增强类工厂 **/
+    private final AopProxyManager manager = new AopProxyManager(this);
 
 
     /**
@@ -48,6 +55,12 @@ public class JamBeanFactory {
             return null;
         }
         Object beanObject = getSingleton(beanName);
+        if(manager.isBeanWrapped(beanName)){
+            if(singletons2.containsKey(beanName)){
+                return singletons2.get(beanName);
+            }
+            beanObject = proxyBean(beanName);
+        }
         if(beanObject==null){
              beanObject = getSingleton(beanName, new ObjectFactory() {
                  @Override
@@ -61,6 +74,32 @@ public class JamBeanFactory {
 
     public void registerBean(String beanName, BeanDefinition beanDefinition){
         this.beans.put(beanName, beanDefinition);
+        if(beanDefinition.getClazz().isAnnotationPresent(Aspect.class)){
+            manager.parseAspect(beanName, beanDefinition.getClazz());
+        }
+    }
+
+    public void removeBean(String beanName){
+        boolean res = this.beans.containsKey(beanName);
+        if(res){
+            this.beans.remove(beanName);
+            removeSingleton(beanName);
+        }
+    }
+
+    public BeanDefinition getBeanDefinition(String beanName){
+        if(this.beans.containsKey(beanName)){
+            return this.beans.get(beanName);
+        }
+        return null;
+    }
+
+    public boolean isBeanExist(String beanName){
+        return this.beans.containsKey(beanName);
+    }
+
+    public int getBeanCount(){
+        return this.beans.size();
     }
 
     protected void registerSingleton(String beanName, Object beanInstance)throws IllegalStateException{
@@ -79,7 +118,7 @@ public class JamBeanFactory {
         }
     }
 
-    protected Object getSingleton(String beanName){
+    public Object getSingleton(String beanName){
         Object instance;
         synchronized (this.singletons){
             Object old = singletons.get(beanName);
@@ -107,7 +146,7 @@ public class JamBeanFactory {
         this.singletons.remove(beanName);
     }
 
-    public boolean containsSingleton(String beanName) {
+    protected boolean containsSingleton(String beanName) {
         return (this.singletons.containsKey(beanName));
     }
 
@@ -123,20 +162,20 @@ public class JamBeanFactory {
         }
     }
 
-    public final boolean isSingletonCurrentlyCreation(String beanName){
+    protected final boolean isSingletonCurrentlyCreation(String beanName){
         return this.singletonsCurrentlyInCreation.contains(beanName);
     }
 
     protected Object doCreateBean(String beanName){
         BeanDefinition bd = beans.get(beanName);
         beforeSingletonObjectCreation(beanName);
-        Object beanObject = createBeanInstance(bd);
+        Object beanObject = createBeanInstance(beanName,bd);
         registerSingleton(beanName, beanObject);
         afterSingletonObjectCreation(beanName);
         return beanObject;
     }
 
-    protected Object createBeanInstance(BeanDefinition beanDefinition){
+    protected Object createBeanInstance(String beanName,BeanDefinition beanDefinition){
         if(beanDefinition instanceof RootBeanDefinition){
             BeanConstructor beanConstructor = ((RootBeanDefinition)beanDefinition).getConstructor();
             Object beanObject ;
@@ -184,6 +223,10 @@ public class JamBeanFactory {
         return list;
     }
 
+    public Set<String> getBeanNames(){
+        return this.beans.keySet();
+    }
+
     @Deprecated
     private void setAutowiredValues(Class clazz, Object instance){
         for(Field field:clazz.getDeclaredFields()){
@@ -202,6 +245,24 @@ public class JamBeanFactory {
                 }
             }
         }
+    }
+
+    private Object proxyBean(String beanName){
+        Object instance;
+        boolean haveTriedJdk = false;
+        if(this.beans.get(beanName).getClazz().getInterfaces().length>0) {
+            instance = manager.generateJdkProxy(beanName);
+            haveTriedJdk = true;
+        }else{
+            instance = manager.generateCglibProxy(beanName);
+        }
+        if(instance==null&&haveTriedJdk){
+            instance = manager.generateCglibProxy(beanName);
+        }
+        if(instance!=null) {
+            this.singletons2.put(beanName, instance);
+        }
+        return instance;
     }
 
 
