@@ -2,24 +2,22 @@ package core.beans.factory;
 
 import annotation.aspect.Aspect;
 import annotation.beans.Resource;
-import annotation.beans.WinterConstructor;
 import core.aop.AopProxyManager;
 import core.beans.BeanConstructor;
 import core.beans.BeanDefinition;
 import core.beans.support.RootBeanDefinition;
 import java.lang.annotation.Annotation;
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * @author james
  * @date 2022-1-13
- * 根据Spring重要容器DefaultListableBeanFactory改编
  * 目前是简单的单例版本
  * 目前默认使用反射的初始化策略，也就是最原始的那个...
+ * @date 2022-1-18
+ * 增加了生成代理对象的策略，如果被Aop增强会使用Jdk或Cglib动态代理增强
  */
 public class JamBeanFactory {
 
@@ -30,18 +28,21 @@ public class JamBeanFactory {
     private static final Object Object_NULL = new Object();
 
     /** 原版也是用一个ConcurrentHashMap实现BeanDefinition的储 */
-    private Map<String, BeanDefinition> beans = new ConcurrentHashMap<>(16);
+    private Map<String, BeanDefinition> beans = new ConcurrentHashMap<>(256);
 
     /** 实际上存储单例的地方，用的也是一个ConcurrentHashMap */
     private Map<String,Object> singletons = new ConcurrentHashMap<>(16);
 
     /** 如果对象需要代理的话，那么将代理对象存入二级缓存之中 **/
-    private Map<String,Object> singletons2 = new ConcurrentHashMap<>(16);
+    private Map<String,Object> earlySingleton = new ConcurrentHashMap<>(16);
+
+    /** 三级缓存 **/
+    private Map<String,ObjectFactory> singletonFactories = new ConcurrentHashMap<>(16);
 
     /** 记录正在创建的bean */
     private final Set singletonsCurrentlyInCreation = Collections.synchronizedSet(new HashSet());
 
-    /**Aop增强类工厂 **/
+    /** Aop增强类工厂 **/
     private final AopProxyManager manager = new AopProxyManager(this);
 
 
@@ -55,12 +56,6 @@ public class JamBeanFactory {
             return null;
         }
         Object beanObject = getSingleton(beanName);
-        if(manager.isBeanWrapped(beanName)){
-            if(singletons2.containsKey(beanName)){
-                return singletons2.get(beanName);
-            }
-            beanObject = proxyBean(beanName);
-        }
         if(beanObject==null){
              beanObject = getSingleton(beanName, new ObjectFactory() {
                  @Override
@@ -114,16 +109,29 @@ public class JamBeanFactory {
 
     protected void addSingleton(String beanName,Object instance){
         synchronized (this.singletons){
-            singletons.put(beanName, instance!=null?instance:Object_NULL);
+            this.singletons.put(beanName, instance!=null?instance:Object_NULL);
+            this.earlySingleton.remove(beanName);
+            this.singletonFactories.remove(beanName);
         }
     }
 
     public Object getSingleton(String beanName){
         Object instance;
-        synchronized (this.singletons){
-            Object old = singletons.get(beanName);
-            instance = old!=Object_NULL?old:null;
+        Object old = singletons.get(beanName);
+        if(old==null && isSingletonCurrentlyCreation(beanName)){
+            synchronized (this.singletons){
+                old = this.earlySingleton.get(beanName);
+                if(old==null){
+                    ObjectFactory factory = this.singletonFactories.get(beanName);
+                    if(factory!=null){
+                        old = factory.getObject();
+                        this.earlySingleton.put(beanName, old);
+                        this.singletonFactories.remove(beanName);
+                    }
+                }
+            }
         }
+        instance = old!=Object_NULL?old:null;
         return instance;
     }
 
@@ -170,6 +178,7 @@ public class JamBeanFactory {
         BeanDefinition bd = beans.get(beanName);
         beforeSingletonObjectCreation(beanName);
         Object beanObject = createBeanInstance(beanName,bd);
+        populateBean(beanName, beanObject, bd);
         registerSingleton(beanName, beanObject);
         afterSingletonObjectCreation(beanName);
         return beanObject;
@@ -189,16 +198,14 @@ public class JamBeanFactory {
                 System.out.println(e);
                 return null;
             }
-                ((RootBeanDefinition)beanDefinition).getAutowireFields().stream().forEach(field -> {
-                    field.setAccessible(true);
-                    try {
-                        field.set(beanObject, getRequiredObjectByType(field.getType()));
-                    }catch (IllegalAccessException e){
-
-                    }
-                });
-            return beanObject;
+            if(manager.isBeanWrapped(beanName)&&beanObject!=null){
+                beanObject = proxyBean(beanName, beanObject);
+                addSingletonFactory(beanName, beanObject);
+            }else if(beanObject!=null){
+                addSingletonFactory(beanName, beanObject);
             }
+            return beanObject;
+        }
         return null;
     }
 
@@ -227,8 +234,7 @@ public class JamBeanFactory {
         return this.beans.keySet();
     }
 
-    @Deprecated
-    private void setAutowiredValues(Class clazz, Object instance){
+    private void setResourceValues(Class clazz, Object instance){
         for(Field field:clazz.getDeclaredFields()){
             if(field.isAnnotationPresent(Resource.class)){
                 Annotation autowireAnnotation = field.getAnnotation(Resource.class);
@@ -247,23 +253,43 @@ public class JamBeanFactory {
         }
     }
 
-    private Object proxyBean(String beanName){
+    private Object proxyBean(String beanName, Object originBean){
         Object instance;
         boolean haveTriedJdk = false;
         if(this.beans.get(beanName).getClazz().getInterfaces().length>0) {
-            instance = manager.generateJdkProxy(beanName);
+            instance = manager.generateJdkProxy(beanName, originBean);
             haveTriedJdk = true;
         }else{
-            instance = manager.generateCglibProxy(beanName);
+            instance = manager.generateCglibProxy(beanName, originBean);
         }
         if(instance==null&&haveTriedJdk){
-            instance = manager.generateCglibProxy(beanName);
-        }
-        if(instance!=null) {
-            this.singletons2.put(beanName, instance);
+            instance = manager.generateCglibProxy(beanName, originBean);
         }
         return instance;
     }
 
+    public void populateBean(String beanName, Object bean, BeanDefinition bd){
+        if(bean == null || bd == null)
+            return ;
+        if(bd instanceof RootBeanDefinition){
+            ((RootBeanDefinition)bd).getAutowireFields().stream().forEach(field -> {
+                field.setAccessible(true);
+                try {
+                    field.set(bean, getRequiredObjectByType(field.getType()));
+                }catch (IllegalAccessException e){
+
+                }
+            });
+            setResourceValues(bd.getClazz(), bean);
+        }
+    }
+
+    public void addSingletonFactory(String beanName, Object e){
+        synchronized (this.singletonFactories) {
+            this.singletonFactories.put(beanName, () -> {
+                return e;
+            });
+        }
+    }
 
 }

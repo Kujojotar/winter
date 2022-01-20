@@ -7,8 +7,16 @@ public class SimpleJoinPoint implements ProceedingJoinPoint {
 
     private Object target;
 
+    public SimpleJoinPoint(Method method) {
+        this(method, null);
+    }
+
     public SimpleJoinPoint(Method method, Object target) {
         this.method = method;
+        this.target = target;
+    }
+
+    public void setTarget(Object target) {
         this.target = target;
     }
 

@@ -15,7 +15,7 @@ public class SimpleMethodWrapper {
 
     private Method aroundMethod;
 
-    private JoinPoint joinPoint;
+    private SimpleJoinPoint joinPoint;
 
     /**
      * 暂时就写这三个试试..
@@ -98,7 +98,11 @@ public class SimpleMethodWrapper {
         this.aroundMethod = aroundMethod;
     }
 
-    public void setJoinPoint(JoinPoint joinPoint) {
+    public void setJoinPoint(SimpleJoinPoint joinPoint) {
         this.joinPoint = joinPoint;
+    }
+
+    public void setJoinPointCustomer(Object customer){
+        this.joinPoint.setTarget(customer);
     }
 }

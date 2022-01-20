@@ -13,6 +13,7 @@ public abstract class AbstractApplicationContext {
         this.registry = registry;
     }
 
+
     public void setParent(AbstractApplicationContext parent) {
         this.parent = parent;
     }

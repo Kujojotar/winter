@@ -44,7 +44,7 @@ public class AopProxyManager {
                     aspectInstance = jamBeanFactory.getBean(aspectName);
                     simpleMethodWrapper.setEntity(aspectInstance);
                     //这样的话要求分析Aspect时增强类已经被注册在BeanFactory容器之中，存在不太合理的一些地方
-                    JoinPoint joinPoint = tryGetProceedingJoinPoint(beanName, methodName);
+                    SimpleJoinPoint joinPoint = tryGetProceedingJoinPoint(beanName, methodName);
                     if(joinPoint==null){
                         return;
                     }
@@ -63,13 +63,12 @@ public class AopProxyManager {
         }
     }
 
-    private ProceedingJoinPoint tryGetProceedingJoinPoint(String beanName, String methodName){
+    private SimpleJoinPoint tryGetProceedingJoinPoint(String beanName, String methodName){
         SimpleJoinPoint joinPoint;
         try{
             Class clazz = jamBeanFactory.getBeanDefinition(beanName).getClazz();
             Method decoratedMethod = clazz.getMethod(methodName);
-            Object instance = jamBeanFactory.getBean(beanName);
-            joinPoint = new SimpleJoinPoint(decoratedMethod, instance);
+            joinPoint = new SimpleJoinPoint(decoratedMethod);
         }catch (Exception e){
             joinPoint = null;
         }
@@ -91,24 +90,28 @@ public class AopProxyManager {
         }
     }
 
-    public Object generateJdkProxy(String beanName){
-        Object origin = jamBeanFactory.getSingleton(beanName);
+    public Object generateJdkProxy(String beanName, Object origin){
         if(origin==null){
             return null;
         }
         AopJdkPolicyProxy jdkPolicyProxy = new AopJdkPolicyProxy(origin);
-        this.methodWrappers.get(beanName).stream().forEach(a->jdkPolicyProxy.addDecoratedMethod(a));
+        this.methodWrappers.get(beanName).stream().forEach(a->{
+            a.setJoinPointCustomer(origin);
+            jdkPolicyProxy.addDecoratedMethod(a);
+        });
         Object target = Proxy.newProxyInstance(jdkPolicyProxy.getClass().getClassLoader(), origin.getClass().getInterfaces(), jdkPolicyProxy);
         return target;
     }
 
-    public Object generateCglibProxy(String beanName){
-        Object origin = jamBeanFactory.getSingleton(beanName);
+    public Object generateCglibProxy(String beanName, Object origin){
         if(origin==null){
             return null;
         }
         AopCglibPolicyProxy cglibPolicyProxy = new AopCglibPolicyProxy(origin);
-        this.methodWrappers.get(beanName).stream().forEach(a->cglibPolicyProxy.addDecoratedMethod(a));
+        this.methodWrappers.get(beanName).stream().forEach(a->{
+            a.setJoinPointCustomer(origin);
+            cglibPolicyProxy.addDecoratedMethod(a);
+        });
         Enhancer enhancer = new Enhancer();
         enhancer.setSuperclass(origin.getClass());
         enhancer.setCallback(cglibPolicyProxy);

@@ -11,5 +11,6 @@ public class SimpleAopTest {
         jamBeanFactory.registerBean("aspect", beanDefinition1);
         Bird bird = (Bird)jamBeanFactory.getBean("fly");
         bird.fly();
+        System.out.println(bird==(Bird)jamBeanFactory.getSingleton("fly"));
     }
 }
